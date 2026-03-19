@@ -1,0 +1,14 @@
+build/
+*.o
+scripts/replay_history.sh
+*.o
+*.a
+*.so
+*.exe
+*.log
+*.snap
+*.wal
+data/
+.vscode/
+.idea/
+cmake-build-*/
