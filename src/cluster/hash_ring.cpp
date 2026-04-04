@@ -78,4 +78,18 @@ std::vector<std::string> hash_ring::replicas(const std::string& key, int count) 
     return out;
 }
 
+const node* hash_ring::get_node(const std::string& id) const {
+    auto it = nodes_.find(id);
+    if (it == nodes_.end()) return nullptr;
+    return &it->second;
+}
+
+std::vector<node> hash_ring::all_nodes() const {
+    std::vector<node> out;
+    out.reserve(nodes_.size());
+    for (const auto& [_, n] : nodes_)
+        out.push_back(n);
+    return out;
+}
+
 }  // namespace dse::cluster

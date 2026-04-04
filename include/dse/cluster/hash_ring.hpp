@@ -26,6 +26,10 @@ public:
     std::string locate(const std::string& key) const;
     std::vector<std::string> replicas(const std::string& key, int count) const;
 
+    const node* get_node(const std::string& id) const;
+    std::vector<node> all_nodes() const;
+    size_t node_count() const { return nodes_.size(); }
+
     const std::map<uint32_t, std::string>& ring() const { return ring_; }
 
 private:
