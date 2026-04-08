@@ -1,6 +1,9 @@
 #pragma once
 
 #include "dse/types.hpp"
+#include "dse/cluster/partition_router.hpp"
+#include "dse/cluster/replication.hpp"
+#include "dse/cluster/recovery.hpp"
 #include "dse/engine/sharded_map.hpp"
 #include "dse/wal.hpp"
 #include <atomic>
@@ -12,6 +15,12 @@
 #include <vector>
 
 namespace dse::engine {
+
+struct cluster_hooks {
+    cluster::partition_router* router = nullptr;
+    cluster::replication* repl = nullptr;
+    cluster::recovery* recover = nullptr;
+};
 
 struct exec_request {
     command cmd;
@@ -26,7 +35,8 @@ public:
         std::atomic<uint64_t> writes{0};
     };
 
-    executor(size_t threads, sharded_map* store, wal* log = nullptr);
+    executor(size_t threads, sharded_map* store, wal* log = nullptr,
+             cluster_hooks hooks = {});
     ~executor();
 
     void start();
@@ -38,10 +48,13 @@ public:
     stats& get_stats() { return stats_; }
     sharded_map& store() { return *store_; }
 
+    void set_hooks(cluster_hooks hooks) { hooks_ = hooks; }
+
 private:
     size_t thread_count_;
     sharded_map* store_;
     wal* wal_;
+    cluster_hooks hooks_;
     stats stats_;
 
     std::vector<std::thread> workers_;
@@ -51,6 +64,7 @@ private:
     std::atomic<bool> running_{false};
 
     bytes dispatch(const command& cmd);
+    bytes apply_repl(const command& cmd);
     void worker_loop();
 };
 

@@ -3,8 +3,8 @@
 
 namespace dse::engine {
 
-executor::executor(size_t threads, sharded_map* store, wal* log)
-    : thread_count_(threads), store_(store), wal_(log) {}
+executor::executor(size_t threads, sharded_map* store, wal* log, cluster_hooks hooks)
+    : thread_count_(threads), store_(store), wal_(log), hooks_(hooks) {}
 
 executor::~executor() {
     stop();
@@ -36,8 +36,56 @@ bytes executor::execute_sync(const command& cmd) {
     return dispatch(cmd);
 }
 
+bytes executor::apply_repl(const command& cmd) {
+    if (cmd.args.size() < 5) return resp_encoder::err("ERR bad repl args");
+
+    uint64_t seq = 0;
+    int op = 0;
+    int64_t exp = 0;
+    try {
+        seq = std::stoull(cmd.args[0]);
+        op = std::stoi(cmd.args[1]);
+        exp = std::stoll(cmd.args[4]);
+    } catch (...) {
+        return resp_encoder::err("ERR bad repl fields");
+    }
+
+    wal_record rec{
+        static_cast<wal_op>(op),
+        cmd.args[2],
+        cmd.args[3],
+        exp
+    };
+
+    if (rec.op == wal_op::set)
+        store_->set(rec.key, rec.value, rec.expires_at);
+    else if (rec.op == wal_op::del)
+        store_->del(rec.key);
+
+    if (wal_) wal_->append(rec);
+
+    if (hooks_.repl)
+        hooks_.repl->on_remote_append({seq, rec});
+
+    return resp_encoder::ok();
+}
+
 bytes executor::dispatch(const command& cmd) {
     stats_.ops++;
+
+    if (cmd.type == cmd_type::heartbeat) {
+        if (hooks_.recover && !cmd.args.empty())
+            hooks_.recover->heartbeat(cmd.args[0]);
+        return resp_encoder::ok();
+    }
+
+    if (cmd.type == cmd_type::repl)
+        return apply_repl(cmd);
+
+    if (hooks_.router) {
+        if (auto forwarded = hooks_.router->forward(cmd))
+            return *forwarded;
+    }
 
     switch (cmd.type) {
     case cmd_type::ping:
@@ -59,6 +107,7 @@ bytes executor::dispatch(const command& cmd) {
         if (wal_) {
             wal_record r{wal_op::set, cmd.args[0], cmd.args[1], ttl > 0 ? ttl : 0};
             wal_->append(r);
+            if (hooks_.repl) hooks_.repl->on_local_write(r);
         }
         return resp_encoder::ok();
     }
@@ -69,6 +118,7 @@ bytes executor::dispatch(const command& cmd) {
         if (wal_ && n) {
             wal_record r{wal_op::del, cmd.args[0], "", 0};
             wal_->append(r);
+            if (hooks_.repl) hooks_.repl->on_local_write(r);
         }
         return resp_encoder::integer(n ? 1 : 0);
     }
@@ -84,12 +134,19 @@ bytes executor::dispatch(const command& cmd) {
         if (cmd.args.empty()) return resp_encoder::err("ERR missing key");
         int64_t d = (cmd.type == cmd_type::decr) ? -1 : 1;
         int64_t n = store_->incr(cmd.args[0], d);
+        if (wal_) {
+            wal_record r{wal_op::incr, cmd.args[0], std::to_string(n), 0};
+            wal_->append(r);
+            if (hooks_.repl) hooks_.repl->on_local_write(r);
+        }
         return resp_encoder::integer(n);
     }
     case cmd_type::info: {
         std::string info = "role:master\n";
         info += "keys:" + std::to_string(store_->size()) + "\n";
         info += "ops:" + std::to_string(stats_.ops.load()) + "\n";
+        if (hooks_.repl)
+            info += "repl_seq:" + std::to_string(hooks_.repl->committed_seq()) + "\n";
         return resp_encoder::bulk(info);
     }
     default:

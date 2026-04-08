@@ -17,7 +17,7 @@ struct entry {
 
 enum class cmd_type : uint8_t {
     get, set, del, exists, incr, decr,
-    ping, info, repl, unknown
+    ping, info, repl, heartbeat, unknown
 };
 
 struct command {

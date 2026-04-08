@@ -17,6 +17,7 @@ cmd_type resp_parser::infer_type(const bytes& cmd) const {
     if (lower == "ping") return cmd_type::ping;
     if (lower == "info") return cmd_type::info;
     if (lower == "repl") return cmd_type::repl;
+    if (lower == "heartbeat") return cmd_type::heartbeat;
     return cmd_type::unknown;
 }
 
