@@ -25,7 +25,7 @@ public:
     recovery(hash_ring* ring, failover_cb on_failover);
 
     void heartbeat(const std::string& node_id);
-    void start(int check_interval_ms = 1000, int timeout_ms = 3000);
+    void start(int check_interval_ms = 1000, int timeout_ms = 3000, int grace_ms = 15000);
     void stop();
 
     size_t live_nodes() const;
@@ -39,6 +39,8 @@ private:
     std::atomic<bool> running_{false};
     int check_ms_ = 1000;
     int timeout_ms_ = 3000;
+    int grace_ms_ = 15000;
+    std::chrono::steady_clock::time_point started_at_{};
 
     void monitor_loop();
 };
