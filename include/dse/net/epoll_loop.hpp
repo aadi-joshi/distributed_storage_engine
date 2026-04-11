@@ -35,8 +35,6 @@ public:
 private:
     int epfd_ = -1;
     bool running_ = true;
-    // epoll_event buffer, only used on linux
-    std::vector<char> event_buf_;
 };
 
 }  // namespace dse::net

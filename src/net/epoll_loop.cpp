@@ -11,7 +11,6 @@ namespace dse::net {
 
 epoll_loop::epoll_loop() {
     epfd_ = epoll_create1(EPOLL_CLOEXEC);
-    event_buf_.resize(sizeof(epoll_event) * 4096);
 }
 
 epoll_loop::~epoll_loop() {
@@ -39,9 +38,8 @@ bool epoll_loop::del(int fd) {
 
 int epoll_loop::poll(handler cb, int timeout_ms) {
     if (!running_) return 0;
-    auto* events = reinterpret_cast<epoll_event*>(event_buf_.data());
-    int cap = static_cast<int>(event_buf_.size() / sizeof(epoll_event));
-    int n = epoll_wait(epfd_, events, cap, timeout_ms);
+    static thread_local std::vector<epoll_event> events(4096);
+    int n = epoll_wait(epfd_, events.data(), static_cast<int>(events.size()), timeout_ms);
     if (n < 0) {
         if (errno == EINTR) return 0;
         return -1;

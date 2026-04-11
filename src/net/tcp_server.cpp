@@ -84,7 +84,19 @@ void tcp_server::queue_response(int fd, bytes resp) {
     std::lock_guard lock(conns_mu_);
     auto it = conns_.find(fd);
     if (it == conns_.end()) return;
-    it->second->write_buf.append(resp);
+    auto* c = it->second.get();
+    c->write_buf.append(resp);
+
+    // workers callback here; flush eagerly since epoll out edge may not rearm
+    while (!c->write_buf.empty()) {
+        ssize_t n = write(c->fd, c->write_buf.data(), c->write_buf.size());
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+            c->closing = true;
+            return;
+        }
+        c->write_buf.erase(0, static_cast<size_t>(n));
+    }
 }
 
 void tcp_server::on_readable(conn* c) {
