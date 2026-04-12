@@ -19,6 +19,8 @@ add_library(dse
     src/cluster/hash_ring.cpp
     src/cluster/replication.cpp
     src/cluster/recovery.cpp
+    src/cluster/peer_client.cpp
+    src/cluster/partition_router.cpp
 )
 
 target_include_directories(dse PUBLIC include)
@@ -41,4 +43,10 @@ if(DSE_BUILD_BENCH)
 
     add_executable(bench-clients bench/bench_concurrent_clients.cpp)
     target_link_libraries(bench-clients PRIVATE dse pthread)
+
+    add_executable(cluster-smoke bench/cluster_smoke.cpp)
+    target_link_libraries(cluster-smoke PRIVATE dse pthread)
+
+    add_executable(tcp-ping bench/tcp_ping.cpp)
+    target_link_libraries(tcp-ping PRIVATE dse pthread)
 endif()
