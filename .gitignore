@@ -1,6 +1,7 @@
 build/
 *.o
 scripts/replay_history.sh
+scripts/commit_cluster.sh
 *.o
 *.a
 *.so
