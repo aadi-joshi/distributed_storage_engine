@@ -1,18 +1,18 @@
 # Distributed Storage Engine
 
-A Redis-style in-memory key-value store I wrote in C++17 to learn how real databases handle concurrency, durability, and distribution. It runs on Linux with an epoll-driven network layer, a sharded execution engine, WAL-based persistence, and a small cluster layer with consistent hashing plus leader-follower replication.
+A Redis-inspired in-memory key-value store I built in C++17. It uses an epoll event loop for TCP I/O, a sharded in-memory store with per-shard reader-writer locks, WAL plus snapshot durability, and a small cluster layer with consistent-hash partitioning, TCP replication, and automatic failover.
 
-I built this over two weeks in March 2026. The goal was not to replace Redis, but to understand the pieces: how you keep 10k TCP clients alive without one thread per connection, how you get read throughput without a global lock, and what happens when a node stops responding.
+I spent about two weeks on this in March/April 2026. The main thing I wanted to learn was how to keep thousands of TCP connections efficient on one thread while still getting good read throughput across CPU cores.
 
 ## Results
 
-Measured on 8 CPU cores inside Docker (`gcc 13`, `-O3 -march=native`, Release build):
+8 cores, Release build, `-O3 -march=native`, Docker (`gcc 13`):
 
 | Test | Result |
 |------|--------|
 | Mixed GET/SET throughput | ~5M ops/sec |
-| Sharded reads vs single mutex map | 4.6x to 7x faster |
-| Concurrent TCP clients connected | 10,000 |
+| Sharded reads vs mutex map | 4x to 7x faster |
+| Concurrent TCP clients | 10,000 |
 
 ```bash
 ./build/bench-throughput
@@ -20,35 +20,33 @@ Measured on 8 CPU cores inside Docker (`gcc 13`, `-O3 -march=native`, Release bu
 ./build/bench-clients 10000
 ```
 
-The throughput bench runs 8 worker threads for 3 seconds with a mostly-read workload. The read comparison preloads 100k keys and hammers GET on both a mutex-backed map and the sharded store. The client bench opens 10k connections to a live server and sends PING on each.
-
 ## Architecture
 
 ```
 Clients (TCP/RESP)
         |
-   epoll event loop  ---- accept / read / write (edge-triggered)
+   epoll event loop
         |
-   command queue
+   partition router ---- forward to key owner if remote
         |
-   worker thread pool (N threads)
+   worker thread pool
         |
-   sharded hash map (512 shards, shared_mutex per shard)
+   sharded map (512 shards, shared_mutex)
         |
-   WAL append ---- replication ---- snapshot (every 60s)
+   WAL ---- TCP REPL to followers
         |
-   consistent hash ring ---- recovery monitor
+   consistent hash ring ---- heartbeat / failover
 ```
 
-**Networking.** One thread runs `epoll_wait` and handles all socket I/O. Connections are non-blocking. Reads feed a RESP parser; complete commands go to the executor queue. Responses are buffered and flushed on `EPOLLOUT`.
+**Networking.** Single-threaded epoll loop, edge-triggered, non-blocking sockets. Supports 12k connections.
 
-**Storage.** Keys are hashed into 512 shards. Reads take a shared lock on one shard. Writes take an exclusive lock. This is why read throughput scales better than a single `std::mutex` around one `unordered_map`.
+**Partitioning.** Keys are mapped with a consistent hash ring (128 vnodes per node). Any node can accept a client connection; if the key belongs elsewhere the request is forwarded over TCP to the owner.
 
-**Durability.** Every SET/DEL appends a binary record to the WAL. On startup the server replays the WAL into memory. A background thread writes length-prefixed snapshot files every 60 seconds.
+**Replication.** The key owner appends to its WAL then sends a `REPL` command to the next nodes on the ring. Followers apply the WAL record locally.
 
-**Cluster.** Each node sits on a consistent hash ring with 128 virtual nodes. The leader replicates WAL entries to followers after local append. A recovery thread tracks heartbeats; if a peer is silent for 3 seconds it is marked down and its keyspace moves to the next ring successor.
+**Failover.** Nodes exchange `HEARTBEAT` messages. If a peer is silent for 3 seconds, recovery marks it down on the ring and remaps its vnodes to the next alive successor.
 
-## Supported Commands
+## Commands
 
 ```
 PING
@@ -61,11 +59,11 @@ DECR key
 INFO
 ```
 
-Protocol is a small subset of Redis RESP (inline and bulk commands).
+Internal cluster commands: `REPL`, `HEARTBEAT` (not for regular clients).
 
 ## Build
 
-Linux only. epoll is required.
+Linux only.
 
 ```bash
 mkdir build && cd build
@@ -73,7 +71,7 @@ cmake .. -DCMAKE_BUILD_TYPE=Release
 cmake --build . -j$(nproc)
 ```
 
-Docker (what I used for benchmarks):
+Docker:
 
 ```bash
 docker build -t dse .
@@ -88,45 +86,45 @@ Single node:
 ./build/dse-server --port 6379 --threads 8 --data ./data
 ```
 
-Flags: `--bind`, `--port`, `--threads`, `--data`, `--node`.
-
-Local 3-node cluster:
+3-node cluster:
 
 ```bash
 bash scripts/run_cluster.sh
 ```
 
-Connect with `nc` or `redis-cli` (partial command support):
+With explicit peers:
 
 ```bash
-echo "SET foo bar" | nc localhost 6379
-echo "GET foo" | nc localhost 6379
+./build/dse-server --port 6379 --node node-1 --data ./data/node1 \
+  --peers node-2:127.0.0.1:6380,node-3:127.0.0.1:6381
 ```
 
-## Project Layout
+Cluster smoke test:
+
+```bash
+bash scripts/test_cluster.sh
+```
+
+## Layout
 
 ```
 include/dse/
-  types.hpp store.hpp wal.hpp snapshot.hpp resp.hpp
-  net/          epoll loop, tcp server
-  engine/       sharded map, thread pool executor
-  cluster/      hash ring, replication, recovery
-src/            implementations + main.cpp
-bench/          throughput, read comparison, client load
-scripts/        benchmark.sh, run_cluster.sh
+  net/       epoll, tcp server
+  engine/    sharded map, executor
+  cluster/   hash ring, router, replication, recovery, peer client
+src/
+bench/
+scripts/
 ```
 
 ## What I Would Do Next
 
-- Add RDB-style incremental snapshots instead of full dumps each time
-- Proper TCP replication stream instead of the current stub sender
-- Raft or at least quorum commit before acknowledging writes
-- Memory limits and eviction policy (LRU)
-- TLS and AUTH
+- Quorum ack before returning on writes
+- Streaming snapshot transfer to new replicas
+- LRU eviction under memory pressure
 
 ## Requirements
 
-- Linux with epoll
+- Linux + epoll
 - g++ 11+ or clang 14+
 - cmake 3.16+
-- pthreads
